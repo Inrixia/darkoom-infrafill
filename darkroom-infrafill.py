@@ -1,11 +1,12 @@
 import os
 import cv2
 import numpy as np
+import threading
 
 # global variables
 max_value_16bit = 65535
 
-def normalize(image, low=2, high=99):
+def normalize(image, low=3, high=99):
     float_image = image.astype('float32')
 
     # Calculate low and high percentiles
@@ -21,51 +22,55 @@ def normalize(image, low=2, high=99):
     normalized = (rescaled_image * max_value_16bit / rescaled_image.max()).astype('uint16')
     return normalized
 
+def display_img(image, name="Img"):
+    target_width = 2560
+    target_height = 1440
+
+    # Calculate new dimensions while maintaining aspect ratio
+    aspect_ratio = image.shape[1] / image.shape[0]
+    if image.shape[0] > target_height or image.shape[1] > target_width:
+        if aspect_ratio > 16 / 9:  # Wide image
+            target_height = int(target_width / aspect_ratio)
+        else:  # Tall image
+            target_width = int(target_height * aspect_ratio)
+
+    cv2.imshow(name, cv2.rotate(cv2.resize(image, (target_width, target_height)), cv2.ROTATE_90_CLOCKWISE))
+
 def dust_mask(infrared_image, positive_image):
     r_channel, _, _ = cv2.split(positive_image)
+    cleared = normalize(r_channel - infrared_image)
 
-    normalized_infrared = normalize(infrared_image, 2, 99)
-    normalized_red = normalize(r_channel, 2, 99)
-
-    c = normalized_infrared / ((normalized_red.astype('float') + 1) / (max_value_16bit + 1))
-    divided = c * (c < max_value_16bit) + max_value_16bit * np.ones(np.shape(c)) * (c > max_value_16bit)
-
-    ret, inverted = cv2.threshold(divided, (max_value_16bit-max_value_16bit/1), max_value_16bit, cv2.THRESH_BINARY_INV)
-    
-    kernel = np.ones((5,5), np.uint8)
-    mask = cv2.dilate(inverted, kernel, iterations = 1)
-    mask = max_value_16bit - mask
+    _, mask = cv2.threshold(cleared, max_value_16bit*0.1, max_value_16bit, cv2.THRESH_BINARY)
 
     return mask
 
+
 def process_image(input_path, output_folder, save_mask=False):
     layered, src = cv2.imreadmulti(input_path, [], cv2.IMREAD_UNCHANGED)
+    filename = os.path.basename(os.path.splitext(input_path)[0])
 
     if len(src) < 2:
-        print(f"{input_path} - SKIPPING! Must contain at least two layers.")
+        print(f"{filename} - SKIPPING! Must contain at least two layers.")
         return
     elif src[0].dtype != np.uint16 or src[1].dtype != np.uint16:
-        print(f"{input_path} - SKIPPING! Must be in 16-bit format.")
+        print(f"{filename} - SKIPPING! Must be in 16-bit format.")
         return
     else:
         ir = src[2]
         img = src[0]
 
-    print(f"{input_path} - Generating dust mask...")
+    print(f"{filename} - Generating dust mask...")
     mask = dust_mask(ir, img)
-
-    filename = os.path.basename(os.path.splitext(input_path)[0])
 
     if save_mask:
         output_path_mask = os.path.join(output_folder, f"{filename}_mask.tif")
-        print(f"{input_path} - Saving mask to {output_path_mask}")
-        cv2.imwrite("./test/mask.tif", mask.astype(np.uint16), params=(cv2.IMWRITE_TIFF_COMPRESSION, 5))
+        print(f"{filename} - Saving mask to {output_path_mask}")
+        cv2.imwrite(output_path_mask, mask.astype(np.uint16), params=(cv2.IMWRITE_TIFF_COMPRESSION, 5))
 
-    print(f"{input_path} - Combining dust mask with positive image...")
     out = np.dstack((img, mask))
 
     output_path = os.path.join(output_folder, f"{filename}_clean.tif")
-    print(f"{input_path} - Saving image to {filename}")
+    print(f"{filename} - Saving image to {filename}")
     cv2.imwrite(output_path, out.astype(np.uint16), params=(cv2.IMWRITE_TIFF_COMPRESSION, 5))
 
 if __name__ == "__main__":
@@ -74,7 +79,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process .tif images.")
     parser.add_argument("input", help="Input folder or file path")
     parser.add_argument("output", help="Output folder path")
-    parser.add_argument("save-mask", action="store_true", help="Save dust mask")
+    parser.add_argument("--save-mask", action="store_true", help="Save dust mask")
     args = parser.parse_args()
 
     input_path = args.input
@@ -87,10 +92,16 @@ if __name__ == "__main__":
         if not input_path.endswith(".tif"):
             print(f"Invalid input path. {input_path} is not a .tif file. Please provide a valid .tif file or a folder containing .tif files.")
             exit(1)
-        process_image(input_path, output_folder)
+        process_image(input_path, output_folder, args.save_mask)
     elif os.path.isdir(input_path):
+        threads = []
         for filename in os.listdir(input_path):
             if filename.endswith(".tif"):
-                process_image(f"{input_path}/{filename}", output_folder)
+                thread = threading.Thread(target=process_image, args=(os.path.join(input_path, filename), output_folder, args.save_mask))
+                thread.start()
+                threads.append(thread)
+        
+        for thread in threads:
+            thread.join()
     else:
         print("Invalid input path.")
