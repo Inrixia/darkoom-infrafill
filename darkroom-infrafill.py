@@ -37,10 +37,24 @@ def display_img(image, name="Img"):
     cv2.imshow(name, cv2.rotate(cv2.resize(image, (target_width, target_height)), cv2.ROTATE_90_CLOCKWISE))
 
 def dust_mask(infrared_image, positive_image):
-    r_channel, _, _ = cv2.split(positive_image)
+    r_channel, g, _ = cv2.split(positive_image)
+
     cleared = normalize(r_channel - infrared_image)
 
-    _, mask = cv2.threshold(cleared, max_value_16bit*0.1, max_value_16bit, cv2.THRESH_BINARY)
+    _, mask = cv2.threshold(cleared, max_value_16bit*0.12, max_value_16bit, cv2.THRESH_BINARY)
+
+    kernel_size = 3
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+
+    # Perform dilation
+    mask = cv2.dilate(mask, kernel, iterations=5)
+
+    # Invert so image previews dont show the entire image as transparent
+    mask = max_value_16bit - mask    
+
+    # display_img(mask, "mask")
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
 
     return mask
 
